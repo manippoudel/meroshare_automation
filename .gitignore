@@ -30,3 +30,9 @@ cypress/screenshots
 js/*.js
 .env
 .env.*
+
+# Video files
+*.mp4
+*.mov
+*.avi
+*.webm

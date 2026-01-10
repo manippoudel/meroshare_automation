@@ -6,98 +6,104 @@ on:
   pull_request:
     branches: ["main"]
   schedule:
-    - cron: "0 6 * * *"  # Runs daily at 11:45 AM NPT; 6:00 AM UTC
-  workflow_dispatch:  # Allows manual runs
+    - cron: "0 6 * * *"  # Runs daily at 6:00 AM UTC (11:45 AM NPT)
+  workflow_dispatch:  # Allows manual runs from GitHub Actions tab
+    inputs:
+      member_index:
+        description: 'Run for specific member (0-3) or leave empty for all'
+        required: false
+        type: string
 
 jobs:
   cypress-run:
     runs-on: ubuntu-22.04
+    timeout-minutes: 20  # Prevent workflow from running too long
     strategy:
       matrix:
-        env: ["RAJEETMANGRATI", "RADHESHYAMMANGRATI", "SABEENAROKKA", "RACHANAMANGRATI", "BISHALKARKI", "RUMAKARKIBISHALWIFE", "SAMIKSHYAKARKI"]  # Hardcoded environments
+        member_index: [0, 1, 2, 3]  # Index for each of the 4 members
+      fail-fast: false  # Continue running other members even if one fails
 
     steps:
       # Step 1: Checkout code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Step 2: Read .env and set up the environment
-      - name: Setup environment for ${{ matrix.env }}
+      # Step 2: Setup environment from shared secrets and member-specific info
+      - name: Setup environment for Member ${{ matrix.member_index }}
         env:
-          ENV_FILE: ${{ secrets[matrix.env] }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KITTA: ${{ secrets.KITTA }}
+          MAX_IPO_PRICE: ${{ secrets.MAX_IPO_PRICE }}
+          MEMBERS_INFO: ${{ secrets.MEMBERS_INFO }}
         run: |
-          echo "$ENV_FILE" > .env
-          echo "Environment for ${{ matrix.env }} configured."
+          # Create .env file with shared configuration
+          echo "TELEGRAM_TOKEN=\"$TELEGRAM_TOKEN\"" > .env
+          echo "TELEGRAM_CHAT_ID=\"$TELEGRAM_CHAT_ID\"" >> .env
+          echo "KITTA=$KITTA" >> .env
+          echo "MAX_IPO_PRICE=$MAX_IPO_PRICE" >> .env
+          
+          # Extract member-specific info from MEMBERS_INFO JSON array
+          MEMBER_DATA=$(echo "$MEMBERS_INFO" | jq -r ".[${{ matrix.member_index }}]")
+          
+          # Add member-specific configuration to .env
+          echo "USER_NAME=\"$(echo "$MEMBER_DATA" | jq -r '.USER_NAME')\"" >> .env
+          echo "PASSWORD=\"$(echo "$MEMBER_DATA" | jq -r '.PASSWORD')\"" >> .env
+          echo "DP=\"$(echo "$MEMBER_DATA" | jq -r '.DP')\"" >> .env
+          echo "TRANSACTION_PIN=$(echo "$MEMBER_DATA" | jq -r '.TRANSACTION_PIN')" >> .env
+          echo "CRN=\"$(echo "$MEMBER_DATA" | jq -r '.CRN')\"" >> .env
+          echo "BANK_NAME=\"$(echo "$MEMBER_DATA" | jq -r '.BANK_NAME')\"" >> .env
+          
+          # Extract member name for display
+          MEMBER_NAME=$(echo "$MEMBER_DATA" | jq -r '.name')
+          echo "MEMBER_NAME=$MEMBER_NAME" >> $GITHUB_ENV
+          
+          echo "Environment configured for $MEMBER_NAME"
 
       # Step 3: Run Cypress
-      - name: Cypress run for ${{ matrix.env }}
+      - name: Cypress run for ${{ env.MEMBER_NAME }}
         uses: cypress-io/github-action@v6
+        with:
+          browser: chrome
 
       # Step 4: Upload artifacts (videos)
-      - name: Upload Cypress videos for ${{ matrix.env }}
+      - name: Upload Cypress videos for ${{ env.MEMBER_NAME }}
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cypress-videos-${{ matrix.env }}
+          name: cypress-videos-${{ env.MEMBER_NAME }}
           path: cypress/videos
           retention-days: 30
 
       # Step 5: Notify Telegram
       - name: Notify Telegram
-        if: always()
+        if: failure() || (success() && hashFiles('cypress/videos/**') != '')
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Extract specific variables from .env and trim spaces
-          TELEGRAM_TOKEN=$(grep '^TELEGRAM_TOKEN' .env | cut -d '=' -f2 | tr -d '"' | xargs)
-          TELEGRAM_CHAT_ID=$(grep '^TELEGRAM_CHAT_ID' .env | cut -d '=' -f2 | tr -d '"' | xargs)
-
-          # echo "Extracted TELEGRAM_TOKEN: '${TELEGRAM_TOKEN}'"
-          # echo "Extracted TELEGRAM_CHAT_ID: '${TELEGRAM_CHAT_ID}'"
-
           STATUS="Success"
           EMOJI="✅"
           if [ "${{ job.status }}" != "success" ]; then
             STATUS="Failed"
             EMOJI="❌"
           fi
-
-          # Notify CI status
-          # MESSAGE="$EMOJI GitHub Actions CI Workflow: $STATUS for ${{ matrix.env }}\nRepository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nTriggered By: ${{ github.actor }}"
           
-          MESSAGE="$STATUS for ${{ matrix.env }} $EMOJI"
+          # Check if IPO application was made
+          VIDEOS=$(find cypress/videos -type f 2>/dev/null || true)
+          
+          if [ -n "$VIDEOS" ]; then
+            MESSAGE="$EMOJI IPO Application: $STATUS for ${{ env.MEMBER_NAME }}"
+          else
+            # Only notify on failure if no videos (means test failed before reaching IPO application)
+            if [ "${{ job.status }}" != "success" ]; then
+              MESSAGE="❌ Error occurred for ${{ env.MEMBER_NAME }}"
+            else
+              echo "No IPO applications made, skipping notification."
+              exit 0
+            fi
+          fi
+          
           curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
               -H "Content-Type: application/json" \
               -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\"}"
-
-          # Post videos to Telegram
-          VIDEOS=$(find cypress/videos -type f)
-          if [ -z "$VIDEOS" ]; then
-            echo "No videos found. Skipping upload."
-          else
-            for video in $VIDEOS; do
-              if [ -f "$video" ]; then
-                echo "Uploading video: $video"
-                curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" \
-                    -F "chat_id=$TELEGRAM_CHAT_ID" \
-                    -F "document=@$video"
-              else
-                echo "File not found: $video"
-              fi
-            done
-          fi
-
-          # Post screenshots to Telegram
-          # SCREENSHOTS=$(find cypress/screenshots -type f)
-          # if [ -z "$SCREENSHOTS" ]; then
-          #   echo "No screenshots found. Skipping upload."
-          # else
-          #   for screenshot in $SCREENSHOTS; do
-          #     if [ -f "$screenshot" ]; then
-          #       echo "Uploading screenshot: $screenshot"
-          #       curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" \
-          #           -F "chat_id=$TELEGRAM_CHAT_ID" \
-          #           -F "document=@$screenshot"
-          #     else
-          #       echo "File not found: $screenshot"
-          #     fi
-          #   done
-          # fi
