@@ -62,9 +62,34 @@ jobs:
 
       # Step 3: Run Cypress
       - name: Cypress run for ${{ env.MEMBER_NAME }}
+        id: cypress
         uses: cypress-io/github-action@v6
         with:
           browser: chrome
+        continue-on-error: true
+
+      # Step 3.5: Send authentication status notification
+      - name: Check Authentication Status
+        if: always()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Check Cypress results for authentication failure
+          if [ "${{ steps.cypress.outcome }}" == "failure" ]; then
+            # Check if it's an authentication error
+            if grep -q "login" cypress/videos/* 2>/dev/null || [ ! -f "cypress/videos/meroshare.cy.js.mp4" ]; then
+              MESSAGE="🔐 Authentication Failed for ${{ env.MEMBER_NAME }} - Please check credentials"
+              curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\"}"
+            fi
+          else
+            MESSAGE="🔓 Authentication Success for ${{ env.MEMBER_NAME }}"
+            curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
+                -H "Content-Type: application/json" \
+                -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\"}"
+          fi
 
       # Step 4: Upload artifacts (videos)
       - name: Upload Cypress videos for ${{ env.MEMBER_NAME }}
@@ -75,33 +100,64 @@ jobs:
           path: cypress/videos
           retention-days: 30
 
-      # Step 5: Notify Telegram
-      - name: Notify Telegram
-        if: failure() || (success() && hashFiles('cypress/videos/**') != '')
+      # Step 5: Notify Telegram about IPO Application
+      - name: Notify IPO Application Status
+        if: always()
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          STATUS="Success"
-          EMOJI="✅"
-          if [ "${{ job.status }}" != "success" ]; then
-            STATUS="Failed"
-            EMOJI="❌"
-          fi
+          # Check if result file exists
+          RESULT_FILE="cypress/results/${{ env.MEMBER_NAME }}-result.json"
           
-          # Check if IPO application was made
-          VIDEOS=$(find cypress/videos -type f 2>/dev/null || true)
+          if [ -f "$RESULT_FILE" ]; then
+            # Read the result
+            STATUS=$(jq -r '.status' "$RESULT_FILE")
+            TOTAL_IPOS=$(jq -r '.totalIPOs' "$RESULT_FILE")
+            ELIGIBLE_IPOS=$(jq -r '.eligibleIPOs' "$RESULT_FILE")
+            
+            case "$STATUS" in
+              "applied")
+                COMPANY=$(jq -r '.appliedIPOs[0].company' "$RESULT_FILE")
+                SCRIP=$(jq -r '.appliedIPOs[0].scrip' "$RESULT_FILE")
+                MESSAGE="✅ IPO Applied for ${{ env.MEMBER_NAME }}
           
-          if [ -n "$VIDEOS" ]; then
-            MESSAGE="$EMOJI IPO Application: $STATUS for ${{ env.MEMBER_NAME }}"
+          📊 Share: $COMPANY ($SCRIP)
+          ✨ Status: Successfully Applied"
+                ;;
+              "already_applied")
+                COMPANY=$(jq -r '.appliedIPOs[0].company' "$RESULT_FILE")
+                SCRIP=$(jq -r '.appliedIPOs[0].scrip' "$RESULT_FILE")
+                MESSAGE="ℹ️ Already Applied - ${{ env.MEMBER_NAME }}
+          
+          📊 Share: $COMPANY ($SCRIP)
+          ⏭️ Skipping (already applied)"
+                ;;
+              "not_eligible")
+                MESSAGE="⚠️ No Action Taken - ${{ env.MEMBER_NAME }}
+          
+          📊 Total IPOs Found: $TOTAL_IPOS
+          ❌ Eligible: None (did not meet our criteria)"
+                ;;
+              "no_ipos")
+                MESSAGE="📭 No IPO Available Today - ${{ env.MEMBER_NAME }}
+          
+          No shares available to apply for today."
+                ;;
+              "failed")
+                COMPANY=$(jq -r '.appliedIPOs[0].company' "$RESULT_FILE")
+                ERROR_MSG=$(jq -r '.appliedIPOs[0].message' "$RESULT_FILE")
+                MESSAGE="❌ Application Failed - ${{ env.MEMBER_NAME }}
+          
+          📊 Share: $COMPANY
+          ⚠️ Error: $ERROR_MSG"
+                ;;
+              *)
+                MESSAGE="⏳ Pending - ${{ env.MEMBER_NAME }}"
+                ;;
+            esac
           else
-            # Only notify on failure if no videos (means test failed before reaching IPO application)
-            if [ "${{ job.status }}" != "success" ]; then
-              MESSAGE="❌ Error occurred for ${{ env.MEMBER_NAME }}"
-            else
-              echo "No IPO applications made, skipping notification."
-              exit 0
-            fi
+            MESSAGE="❌ Error: No result file found for ${{ env.MEMBER_NAME }}"
           fi
           
           curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \

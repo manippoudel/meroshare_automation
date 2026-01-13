@@ -25,14 +25,41 @@ build/Release
 # Dependency directory
 # https://www.npmjs.org/doc/misc/npm-faq.html#should-i-check-my-node_modules-folder-into-git
 node_modules
+
+# Cypress artifacts
 cypress/videos
 cypress/screenshots
-js/*.js
-.env
-.env.*
+cypress/downloads
+cypress/logs
+cypress/results
 
 # Video files
 *.mp4
 *.mov
 *.avi
 *.webm
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build outputs
+dist/
+build/
+js/*.js
+
+# OS files
+Thumbs.db
+
+# Helper scripts (optional - comment out if you want to commit)
+# update-secrets.sh
