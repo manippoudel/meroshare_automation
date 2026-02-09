@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "cypress": "^12.7.0",
+    "cypress": "^13.17.0",
     "dotenv": "^16.3.1"
   },
   "scripts": {

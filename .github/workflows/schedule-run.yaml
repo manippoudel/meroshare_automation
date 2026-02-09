@@ -42,22 +42,15 @@ jobs:
           echo "TELEGRAM_CHAT_ID=\"$TELEGRAM_CHAT_ID\"" >> .env
           echo "KITTA=$KITTA" >> .env
           echo "MAX_IPO_PRICE=$MAX_IPO_PRICE" >> .env
-          
-          # Extract member-specific info from MEMBERS_INFO JSON array
-          MEMBER_DATA=$(echo "$MEMBERS_INFO" | jq -r ".[${{ matrix.member_index }}]")
-          
-          # Add member-specific configuration to .env
-          echo "USER_NAME=\"$(echo "$MEMBER_DATA" | jq -r '.USER_NAME')\"" >> .env
-          echo "PASSWORD=\"$(echo "$MEMBER_DATA" | jq -r '.PASSWORD')\"" >> .env
-          echo "DP=\"$(echo "$MEMBER_DATA" | jq -r '.DP')\"" >> .env
-          echo "TRANSACTION_PIN=$(echo "$MEMBER_DATA" | jq -r '.TRANSACTION_PIN')" >> .env
-          echo "CRN=\"$(echo "$MEMBER_DATA" | jq -r '.CRN')\"" >> .env
-          echo "BANK_NAME=\"$(echo "$MEMBER_DATA" | jq -r '.BANK_NAME')\"" >> .env
-          
+
+          # Extract only the specific member from MEMBERS_INFO for this job
+          SINGLE_MEMBER=$(echo "$MEMBERS_INFO" | jq -c "[.[${{ matrix.member_index }}]]")
+          echo "MEMBERS_INFO='$SINGLE_MEMBER'" >> .env
+
           # Extract member name for display
-          MEMBER_NAME=$(echo "$MEMBER_DATA" | jq -r '.name')
+          MEMBER_NAME=$(echo "$MEMBERS_INFO" | jq -r ".[${{ matrix.member_index }}].name")
           echo "MEMBER_NAME=$MEMBER_NAME" >> $GITHUB_ENV
-          
+
           echo "Environment configured for $MEMBER_NAME"
 
       # Step 3: Run Cypress
