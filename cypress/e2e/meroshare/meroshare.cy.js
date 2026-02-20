@@ -21,151 +21,150 @@ membersInfo.forEach((member, index) => {
       bankName: member.BANK_NAME
     }
 
-    let resppp = [];
+    let eligibleIPOs = [];
+    let applicationResults = {
+      member: member.name,
+      totalIPOs: 0,
+      eligibleIPOs: 0,
+      appliedIPOs: [],
+      status: 'pending'
+    };
 
     before(() => {
-      // Add delay between members to avoid rate limiting
       if (index > 0) {
         cy.wait(3000);
       }
 
       cy.intercept("POST", "https://webbackend.cdsc.com.np/api/meroShare/companyShare/applicableIssue/").as("applicableshare");
-      cy.intercept({
-        url: "https://webbackend.cdsc.com.np/api/meroShare/active/**"
-      }).as("active");
       cy.intercept("POST", "https://webbackend.cdsc.com.np/api/meroShare/applicantForm/share/apply").as('apply_share');
 
       cy.visit('/');
       cy.login(result.password, result.username, result.dp);
 
-      cy.get('li.nav-item').contains("My ASBA", {
-        matchCase: false
-      }).click();
+      cy.get('li.nav-item').contains("My ASBA", { matchCase: false }).click();
 
       cy.wait("@applicableshare").then((resp) => {
         const response = resp.response.body.object;
-        console.log(`${member.name} - Total IPOs:`, response);
+        applicationResults.totalIPOs = response.length;
 
-        // Filter for eligible IPOs
-        let filtered_response = response.filter((data) => {
-          const isEligible = !data.action &&
-                           data.shareTypeName === "IPO" &&
-                           data.shareGroupName === "Ordinary Shares" &&
-                           data.subGroup === "For General Public";
+        const filtered = response.filter((data) => {
+          const eligible = !data.action &&
+            data.shareTypeName === "IPO" &&
+            data.shareGroupName === "Ordinary Shares" &&
+            data.subGroup === "For General Public";
 
-          // Log why each IPO is filtered or eligible
-          if (!isEligible) {
+          if (eligible) {
+            cy.log(`${member.name} - ELIGIBLE: ${data.companyName}`);
+          } else {
             const reasons = [];
             if (data.action) reasons.push('Already applied');
-            if (data.shareTypeName !== "IPO") reasons.push(`Wrong type: ${data.shareTypeName}`);
-            if (data.shareGroupName !== "Ordinary Shares") reasons.push(`Wrong group: ${data.shareGroupName}`);
-            if (data.subGroup !== "For General Public") reasons.push(`Wrong subgroup: ${data.subGroup}`);
-            console.log(`${member.name} - FILTERED: ${data.companyName} - ${reasons.join(', ')}`);
-          } else {
-            console.log(`${member.name} - ELIGIBLE: ${data.companyName}`);
+            if (data.shareTypeName !== "IPO") reasons.push(`Type=${data.shareTypeName}`);
+            if (data.shareGroupName !== "Ordinary Shares") reasons.push(`Group=${data.shareGroupName}`);
+            if (data.subGroup !== "For General Public") reasons.push(`SubGroup=${data.subGroup}`);
+            cy.log(`${member.name} - FILTERED: ${data.companyName} [${reasons.join(', ')}]`);
           }
-
-          return isEligible;
+          return eligible;
         });
 
-        console.log(`${member.name} - Eligible IPOs:`, filtered_response.length);
-        resppp.push(filtered_response);
+        applicationResults.eligibleIPOs = filtered.length;
+        eligibleIPOs.push(...filtered);
       });
     });
 
     it('Apply for Share', () => {
-      if (!resppp[0] || resppp[0].length === 0) {
-        cy.log(`${member.name}: No eligible IPOs available to apply`);
+      if (eligibleIPOs.length === 0) {
+        cy.log(`${member.name}: No eligible IPOs to apply`);
+        applicationResults.status = applicationResults.totalIPOs > 0 ? 'not_eligible' : 'no_ipos';
+        cy.writeFile(`cypress/results/${member.name}-result.json`, applicationResults);
         return;
       }
 
-      resppp.map((dat) => {
-        dat.map((data) => {
-          cy.visit('/');
-          cy.get('li.nav-item').contains("My ASBA", { matchCase: false }).click();
+      eligibleIPOs.forEach((data) => {
+        // Re-intercept for this navigation
+        cy.intercept("POST", "https://webbackend.cdsc.com.np/api/meroShare/companyShare/applicableIssue/").as("applicableshare2");
 
-          cy.get(".company-list .company-name span[tooltip='Company Name']").contains(data.companyName).should('be.visible');
-          cy.get(".company-list").contains(data.companyName).parents('.company-list').within(() => {
-            cy.get(".action-buttons button").click()
+        cy.visit('/');
+        cy.get('li.nav-item').contains("My ASBA", { matchCase: false }).click();
+
+        // Wait for the company list to fully load before interacting
+        cy.wait("@applicableshare2");
+
+        cy.get(".company-list .company-name span[tooltip='Company Name']")
+          .contains(data.companyName)
+          .should('be.visible');
+
+        cy.get(".company-list").contains(data.companyName).parents('.company-list').within(() => {
+          cy.get(".action-buttons button").click();
+        });
+
+        cy.log(`${member.name}: Applying for ${data.companyName}`);
+
+        // Wait for bank dropdown to populate
+        cy.get('#selectBank option').should('have.length.gt', 1);
+
+        // Select bank
+        if (!result.bankName || result.bankName.trim() === '') {
+          cy.get("#selectBank").select(1);
+        } else {
+          cy.get('#selectBank option').then($options => {
+            const banks = [...$options]
+              .map(opt => ({ value: opt.value, text: opt.text.trim() }))
+              .filter(opt => opt.text && opt.text !== 'Please choose one');
+
+            const match = banks.find(b =>
+              b.text.toUpperCase().includes(result.bankName.toUpperCase()) ||
+              result.bankName.toUpperCase().includes(b.text.toUpperCase())
+            );
+
+            if (match) {
+              cy.log(`${member.name}: Selecting bank: ${match.text}`);
+              cy.get("#selectBank").select(match.value);
+            } else {
+              cy.log(`${member.name}: Bank not found, using first available`);
+              cy.get("#selectBank").select(banks[0].value);
+            }
+          });
+        }
+
+        cy.get('#selectBank').should('not.have.value', '');
+
+        // Select account number
+        cy.get('#accountNumber').should('be.visible')
+          .find('option').should('have.length.gt', 1)
+          .eq(1).then($opt => {
+            cy.get('#accountNumber').select($opt.val());
           });
 
-          cy.log(`${member.name}: Applying for ${data.companyName}`);
+        // Fill form
+        cy.get('#appliedKitta').clear().type(result.kitta).should("have.value", `${result.kitta}`);
+        cy.get("#crnNumber").clear().type(result.crn, { log: false });
+        cy.get('#disclaimer').check().should("be.checked");
+        cy.get('button').contains("proceed", { matchCase: false }).click();
+        cy.get("#transactionPIN").type(result.transactionPin, { log: false });
+        cy.get("button").contains("Apply").click();
 
-          // Wait for form to load
-          cy.wait(2000);
+        cy.wait('@apply_share', { timeout: 30000 }).then((resp) => {
+          const statusCode = resp.response.statusCode;
+          const body = resp.response.body;
 
-          // Select bank - use simpler approach from reference code
-          if (result.bankName == "" || !result.bankName) {
-            cy.get("#selectBank").select(1);
+          if (statusCode === 201) {
+            cy.log(`${member.name}: ✅ Applied for ${data.companyName}`);
+            applicationResults.appliedIPOs.push({ company: data.companyName, scrip: data.scrip, status: 'success', message: body.message });
+            applicationResults.status = 'applied';
+          } else if (statusCode === 409) {
+            cy.log(`${member.name}: ⚠️ Already applied to ${data.companyName}`);
+            applicationResults.appliedIPOs.push({ company: data.companyName, scrip: data.scrip, status: 'already_applied', message: body.message });
+            applicationResults.status = 'already_applied';
           } else {
-            // Try to select by partial text match
-            cy.get('#selectBank option').then($options => {
-              const availableBanks = [...$options]
-                .map((opt, idx) => ({ value: opt.value, text: opt.text.trim(), index: idx }))
-                .filter(opt => opt.text && opt.text !== 'Please choose one');
-
-              console.log(`${member.name} - Available banks:`, availableBanks.map(b => b.text));
-              console.log(`${member.name} - Looking for:`, result.bankName);
-
-              const matchingBank = availableBanks.find(bank => {
-                const bankUpper = bank.text.toUpperCase();
-                const requestedUpper = result.bankName.toUpperCase();
-                return bankUpper.includes(requestedUpper) || requestedUpper.includes(bankUpper);
-              });
-
-              if (matchingBank) {
-                cy.log(`${member.name}: Found matching bank: ${matchingBank.text}`);
-                cy.get("#selectBank").select(matchingBank.value);
-              } else {
-                cy.log(`${member.name}: Bank not found, selecting first available`);
-                cy.get("#selectBank").select(availableBanks[0].value);
-              }
-            });
+            cy.log(`${member.name}: ❌ Failed for ${data.companyName}: ${body.message}`);
+            applicationResults.appliedIPOs.push({ company: data.companyName, scrip: data.scrip, status: 'failed', message: body.message });
+            applicationResults.status = 'failed';
           }
 
-          // Verify bank is selected
-          cy.get('#selectBank').should('not.have.value', '');
-
-          // Select account number - wait for it to populate
-          cy.get('#accountNumber').should('be.visible')
-            .find('option').should('have.length.gt', 1)
-            .eq(1).then($option => {
-              cy.get('#accountNumber').select($option.val());
-            });
-
-          // Enter kitta
-          cy.get('#appliedKitta').clear().type(result.kitta).should("have.value", result.kitta);
-
-          // Enter CRN
-          cy.get("#crnNumber").clear().type(result.crn, { log: false });
-
-          // Accept terms
-          cy.get('#disclaimer').check().should("be.checked");
-
-          // Proceed
-          cy.get('button').contains("proceed", { matchCase: false }).click();
-
-          // Enter transaction PIN and submit
-          cy.get("#transactionPIN").type(result.transactionPin, { log: false });
-          cy.get("button").contains("Apply").click();
-
-          // Wait for response
-          cy.wait('@apply_share', { timeout: 30000 }).then((resp) => {
-            const statusCode = resp.response.statusCode;
-            const responseBody = resp.response.body;
-
-            if (statusCode === 201) {
-              cy.log(`${member.name}: ✅ Successfully applied for ${data.companyName}`);
-            } else if (statusCode === 409) {
-              cy.log(`${member.name}: ⚠️ Already applied to ${data.companyName}`);
-            } else if (statusCode === 400) {
-              cy.log(`${member.name}: ❌ Application failed for ${data.companyName}: ${responseBody.message}`);
-            }
-
-            expect([201, 400, 409]).to.include(statusCode);
-          })
-        })
-      })
+          cy.writeFile(`cypress/results/${member.name}-result.json`, applicationResults);
+          expect([201, 409]).to.include(statusCode);
+        });
+      });
     });
   });
 });

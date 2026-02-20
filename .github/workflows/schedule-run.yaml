@@ -7,28 +7,21 @@ on:
     branches: ["main"]
   schedule:
     - cron: "0 6 * * *"  # Runs daily at 6:00 AM UTC (11:45 AM NPT)
-  workflow_dispatch:  # Allows manual runs from GitHub Actions tab
-    inputs:
-      member_index:
-        description: 'Run for specific member (0-3) or leave empty for all'
-        required: false
-        type: string
+  workflow_dispatch:
 
 jobs:
   cypress-run:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20  # Prevent workflow from running too long
+    timeout-minutes: 20
     strategy:
       matrix:
-        member_index: [0, 1, 2, 3]  # Index for each of the 4 members
-      fail-fast: false  # Continue running other members even if one fails
+        member_index: [0, 1, 2, 3]
+      fail-fast: false
 
     steps:
-      # Step 1: Checkout code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Step 2: Setup environment from shared secrets and member-specific info
       - name: Setup environment for Member ${{ matrix.member_index }}
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -37,23 +30,18 @@ jobs:
           MAX_IPO_PRICE: ${{ secrets.MAX_IPO_PRICE }}
           MEMBERS_INFO: ${{ secrets.MEMBERS_INFO }}
         run: |
-          # Create .env file with shared configuration
           echo "TELEGRAM_TOKEN=\"$TELEGRAM_TOKEN\"" > .env
           echo "TELEGRAM_CHAT_ID=\"$TELEGRAM_CHAT_ID\"" >> .env
           echo "KITTA=$KITTA" >> .env
           echo "MAX_IPO_PRICE=$MAX_IPO_PRICE" >> .env
 
-          # Extract only the specific member from MEMBERS_INFO for this job
           SINGLE_MEMBER=$(echo "$MEMBERS_INFO" | jq -c "[.[${{ matrix.member_index }}]]")
           echo "MEMBERS_INFO='$SINGLE_MEMBER'" >> .env
 
-          # Extract member name for display
           MEMBER_NAME=$(echo "$MEMBERS_INFO" | jq -r ".[${{ matrix.member_index }}].name")
           echo "MEMBER_NAME=$MEMBER_NAME" >> $GITHUB_ENV
-
           echo "Environment configured for $MEMBER_NAME"
 
-      # Step 3: Run Cypress
       - name: Cypress run for ${{ env.MEMBER_NAME }}
         id: cypress
         uses: cypress-io/github-action@v6
@@ -61,98 +49,41 @@ jobs:
           browser: chrome
         continue-on-error: true
 
-      # Step 3.5: Send authentication status notification
-      - name: Check Authentication Status
-        if: always()
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          # Check Cypress results for authentication failure
-          if [ "${{ steps.cypress.outcome }}" == "failure" ]; then
-            # Check if it's an authentication error
-            if grep -q "login" cypress/videos/* 2>/dev/null || [ ! -f "cypress/videos/meroshare.cy.js.mp4" ]; then
-              MESSAGE="🔐 Authentication Failed for ${{ env.MEMBER_NAME }} - Please check credentials"
-              curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\"}"
-            fi
-          else
-            MESSAGE="🔓 Authentication Success for ${{ env.MEMBER_NAME }}"
-            curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
-                -H "Content-Type: application/json" \
-                -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\"}"
-          fi
-
-      # Step 4: Upload artifacts (videos)
-      - name: Upload Cypress videos for ${{ env.MEMBER_NAME }}
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cypress-videos-${{ env.MEMBER_NAME }}
-          path: cypress/videos
-          retention-days: 30
-
-      # Step 5: Notify Telegram about IPO Application
       - name: Notify IPO Application Status
         if: always()
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Check if result file exists
-          RESULT_FILE="cypress/results/${{ env.MEMBER_NAME }}-result.json"
-          
-          if [ -f "$RESULT_FILE" ]; then
-            # Read the result
-            STATUS=$(jq -r '.status' "$RESULT_FILE")
-            TOTAL_IPOS=$(jq -r '.totalIPOs' "$RESULT_FILE")
-            ELIGIBLE_IPOS=$(jq -r '.eligibleIPOs' "$RESULT_FILE")
-            
-            case "$STATUS" in
-              "applied")
-                COMPANY=$(jq -r '.appliedIPOs[0].company' "$RESULT_FILE")
-                SCRIP=$(jq -r '.appliedIPOs[0].scrip' "$RESULT_FILE")
-                MESSAGE="✅ IPO Applied for ${{ env.MEMBER_NAME }}
-          
-          📊 Share: $COMPANY ($SCRIP)
-          ✨ Status: Successfully Applied"
-                ;;
-              "already_applied")
-                COMPANY=$(jq -r '.appliedIPOs[0].company' "$RESULT_FILE")
-                SCRIP=$(jq -r '.appliedIPOs[0].scrip' "$RESULT_FILE")
-                MESSAGE="ℹ️ Already Applied - ${{ env.MEMBER_NAME }}
-          
-          📊 Share: $COMPANY ($SCRIP)
-          ⏭️ Skipping (already applied)"
-                ;;
-              "not_eligible")
-                MESSAGE="⚠️ No Action Taken - ${{ env.MEMBER_NAME }}
-          
-          📊 Total IPOs Found: $TOTAL_IPOS
-          ❌ Eligible: None (did not meet our criteria)"
-                ;;
-              "no_ipos")
-                MESSAGE="📭 No IPO Available Today - ${{ env.MEMBER_NAME }}
-          
-          No shares available to apply for today."
-                ;;
-              "failed")
-                COMPANY=$(jq -r '.appliedIPOs[0].company' "$RESULT_FILE")
-                ERROR_MSG=$(jq -r '.appliedIPOs[0].message' "$RESULT_FILE")
-                MESSAGE="❌ Application Failed - ${{ env.MEMBER_NAME }}
-          
-          📊 Share: $COMPANY
-          ⚠️ Error: $ERROR_MSG"
-                ;;
-              *)
-                MESSAGE="⏳ Pending - ${{ env.MEMBER_NAME }}"
-                ;;
-            esac
-          else
-            MESSAGE="❌ Error: No result file found for ${{ env.MEMBER_NAME }}"
-          fi
-          
-          curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
+          send_telegram() {
+            local msg="$1"
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
               -H "Content-Type: application/json" \
-              -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\"}"
+              -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"${msg}\"}"
+          }
+
+          RESULT_FILE="cypress/results/${{ env.MEMBER_NAME }}-result.json"
+
+          if [ -f "$RESULT_FILE" ]; then
+            STATUS=$(jq -r '.status' "$RESULT_FILE")
+
+            if [ "$STATUS" = "applied" ]; then
+              COMPANY=$(jq -r '.appliedIPOs[0].company' "$RESULT_FILE")
+              SCRIP=$(jq -r '.appliedIPOs[0].scrip' "$RESULT_FILE")
+              MSG=$(printf "IPO Applied - ${{ env.MEMBER_NAME }}\n\nShare: %s (%s)\nStatus: Successfully Applied" "$COMPANY" "$SCRIP")
+              send_telegram "$MSG"
+
+            elif [ "$STATUS" = "failed" ]; then
+              COMPANY=$(jq -r '.appliedIPOs[0].company' "$RESULT_FILE")
+              ERR=$(jq -r '.appliedIPOs[0].message' "$RESULT_FILE")
+              MSG=$(printf "Application Failed - ${{ env.MEMBER_NAME }}\n\nShare: %s\nError: %s" "$COMPANY" "$ERR")
+              send_telegram "$MSG"
+
+            else
+              echo "Status: $STATUS - no notification needed"
+            fi
+
+          elif [ "${{ steps.cypress.outcome }}" = "failure" ]; then
+            MSG=$(printf "Login Failed - ${{ env.MEMBER_NAME }}\n\nPlease check credentials in GitHub Secrets (MEMBERS_INFO)")
+            send_telegram "$MSG"
+          fi
