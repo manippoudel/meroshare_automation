@@ -89,15 +89,18 @@ membersInfo.forEach((member, index) => {
         // Wait for the company list to fully load before interacting
         cy.wait("@applicableshare2");
 
+        // Normalize whitespace - API sometimes returns double spaces in company names
+        const companyName = data.companyName.replace(/\s+/g, ' ').trim();
+
         cy.get(".company-list .company-name span[tooltip='Company Name']")
-          .contains(data.companyName)
+          .contains(companyName)
           .should('be.visible');
 
-        cy.get(".company-list").contains(data.companyName).parents('.company-list').within(() => {
+        cy.get(".company-list").contains(companyName).parents('.company-list').within(() => {
           cy.get(".action-buttons button").click();
         });
 
-        cy.log(`${member.name}: Applying for ${data.companyName}`);
+        cy.log(`${member.name}: Applying for ${companyName}`);
 
         // Wait for bank dropdown to populate
         cy.get('#selectBank option').should('have.length.gt', 1);
@@ -148,16 +151,16 @@ membersInfo.forEach((member, index) => {
           const body = resp.response.body;
 
           if (statusCode === 201) {
-            cy.log(`${member.name}: ✅ Applied for ${data.companyName}`);
-            applicationResults.appliedIPOs.push({ company: data.companyName, scrip: data.scrip, status: 'success', message: body.message });
+            cy.log(`${member.name}: ✅ Applied for ${companyName}`);
+            applicationResults.appliedIPOs.push({ company: companyName, scrip: data.scrip, status: 'success', message: body.message });
             applicationResults.status = 'applied';
           } else if (statusCode === 409) {
-            cy.log(`${member.name}: ⚠️ Already applied to ${data.companyName}`);
-            applicationResults.appliedIPOs.push({ company: data.companyName, scrip: data.scrip, status: 'already_applied', message: body.message });
+            cy.log(`${member.name}: ⚠️ Already applied to ${companyName}`);
+            applicationResults.appliedIPOs.push({ company: companyName, scrip: data.scrip, status: 'already_applied', message: body.message });
             applicationResults.status = 'already_applied';
           } else {
-            cy.log(`${member.name}: ❌ Failed for ${data.companyName}: ${body.message}`);
-            applicationResults.appliedIPOs.push({ company: data.companyName, scrip: data.scrip, status: 'failed', message: body.message });
+            cy.log(`${member.name}: ❌ Failed for ${companyName}: ${body.message}`);
+            applicationResults.appliedIPOs.push({ company: companyName, scrip: data.scrip, status: 'failed', message: body.message });
             applicationResults.status = 'failed';
           }
 
