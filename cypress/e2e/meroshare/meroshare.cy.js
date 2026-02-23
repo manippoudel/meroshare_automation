@@ -31,8 +31,9 @@ membersInfo.forEach((member, index) => {
     };
 
     before(() => {
+      // Stagger members to avoid rate limiting from MeroShare server
       if (index > 0) {
-        cy.wait(3000);
+        cy.wait(index * 5000);
       }
 
       cy.intercept("POST", "https://webbackend.cdsc.com.np/api/meroShare/companyShare/applicableIssue/").as("applicableshare");
@@ -41,6 +42,7 @@ membersInfo.forEach((member, index) => {
       cy.visit('/');
       cy.login(result.password, result.username, result.dp);
 
+      // login() already waits for nav to be visible - now click My ASBA
       cy.get('li.nav-item').contains("My ASBA", { matchCase: false }).click();
 
       cy.wait("@applicableshare").then((resp) => {

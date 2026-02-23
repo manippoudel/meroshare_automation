@@ -27,17 +27,14 @@
 
 Cypress.Commands.add("login", (password, username, dp) =>{
     // username and password input
-    cy.get('#password').clear().type(password, {
-        log: false
-      })
-      cy.get('#username').clear().type(username).should('have.value', username)
+    cy.get('#password').clear().type(password, { log: false });
+    cy.get('#username').clear().type(username).should('have.value', username);
 
-      // select the DP
-      cy.get("#selectBranch").click();
-      cy.get('ul li').contains(dp, {
-        matchCase: false
-      }).click();
+    // select the DP
+    cy.get("#selectBranch").click();
+    cy.get('ul li').contains(dp, { matchCase: false }).click();
 
-      // click login button 
-      cy.get('button').contains("Login").click();
+    // click login button and wait for navigation to dashboard
+    cy.get('button').contains("Login").click();
+    cy.get('li.nav-item', { timeout: 15000 }).should('be.visible');
 })
